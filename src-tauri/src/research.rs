@@ -70,7 +70,17 @@ impl ResearchAgent {
 
     pub async fn render_topic(&self, topic: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
         let url = format!("https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles={}&format=json&redirects=1", urlencoding::encode(topic));
-        let content = self.client.get(url).header("User-Agent", "Grantha/1.0").send().await?.text().await?;
-        self.query_ollama(&format!("Summarize this content about '{}' into a technical article:\n{}", topic, content)).await
+        let content = self.client.get(&url).header("User-Agent", "Grantha/1.0").send().await?.text().await?;
+        
+        let wiki_url = format!("https://en.wikipedia.org/wiki/{}", urlencoding::encode(topic));
+        let prompt = format!(
+            "Summarize this content about '{}' into a thorough technical article. \
+             Use professional tone and structure with markdown headers (## Overview, ## Core Concepts, ## Technical Details). \
+             Be comprehensive and explain sub-components. \
+             At the end of the article, add a '## Sources' section and list this link: {}.\n\nContent:\n{}", 
+            topic, wiki_url, content
+        );
+        
+        self.query_ollama(&prompt).await
     }
 }

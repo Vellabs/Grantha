@@ -10,6 +10,8 @@ export interface Node {
   parentId?: string;
   expanded?: boolean;
   position?: { x: number; y: number };
+  cachedArticle?: string;
+  userNotes?: string;
 }
 
 export interface Edge {
@@ -33,6 +35,7 @@ interface GranthaStore {
   selectedNode: Node | null;
   readerContent: string | null;
   readerLoading: boolean;
+  userNotes: string;
 
   // Deep dive loading
   deepDiveLoading: boolean;
@@ -44,30 +47,13 @@ interface GranthaStore {
   toggleNodeExpansion: (nodeId: string, forceState?: boolean) => void;
   selectNode: (node: Node | null) => void;
   loadArticle: (node: Node, refresh?: boolean) => Promise<void>;
+  saveNotes: (notes: string) => Promise<void>;
   updateNodePositions: (positions: { id: string, position: { x: number, y: number } }[]) => void;
   loadFullGraph: (query: string, preserveVisibility?: boolean) => Promise<void>;
   loadHistory: () => Promise<void>;
   deleteHistoryItem: (query: string) => Promise<void>;
   reset: () => void;
 }
-
-// Throttled sync to backend
-let syncTimeout: ReturnType<typeof setTimeout> | null = null;
-const syncPositionsToBackend = (query: string, positions: { id: string, position: { x: number, y: number } }[]) => {
-  if (syncTimeout) clearTimeout(syncTimeout);
-  
-  syncTimeout = setTimeout(() => {
-    const nodesToSync = positions.map(p => ({
-      id: p.id,
-      label: '', 
-      x: p.position.x,
-      y: p.position.y
-    }));
-
-    invoke('update_node_positions', { query, nodes: nodesToSync }).catch(console.error);
-    syncTimeout = null;
-  }, 500); // 500ms debounce
-};
 
 export const useStore = create<GranthaStore>((set, get) => ({
   appView: 'search',
@@ -81,11 +67,12 @@ export const useStore = create<GranthaStore>((set, get) => ({
   selectedNode: null,
   readerContent: null,
   readerLoading: false,
+  userNotes: '',
   deepDiveLoading: false,
 
   loadFullGraph: async (query: string, preserveVisibility: boolean = false) => {
     try {
-      const data: { nodes: (Node & { x?: number, y?: number })[]; edges: Edge[] } = await invoke('load_full_graph', { query });
+      const data: { nodes: (Node & { x?: number, y?: number, cached_article?: string, user_notes?: string })[]; edges: Edge[] } = await invoke('load_full_graph', { query });
       if (!data || !data.nodes) {
         console.warn('Backend returned empty graph data');
         return;
@@ -110,7 +97,9 @@ export const useStore = create<GranthaStore>((set, get) => ({
             label: n.label,
             description: n.description,
             expanded: state?.expanded || false,
-            position: position
+            position: position,
+            cachedArticle: n.cached_article,
+            userNotes: n.user_notes
           };
         });
 
@@ -175,7 +164,9 @@ export const useStore = create<GranthaStore>((set, get) => ({
       visibleNodes: updatedVisibleNodes
     });
 
-    syncPositionsToBackend(query, positions);
+    invoke('update_node_positions', { query, positions }).catch(err => {
+      console.error('Failed to sync positions to backend:', err);
+    });
   },
 
   toggleNodeExpansion: (nodeId: string, forceState?: boolean) => {
@@ -322,27 +313,71 @@ export const useStore = create<GranthaStore>((set, get) => ({
 
   selectNode: (node) => {
     if (node) {
-      set({ selectedNode: node, readerContent: null, appView: 'reader' });
+      set({ 
+        selectedNode: node, 
+        readerContent: node.cachedArticle || null, 
+        userNotes: node.userNotes || '',
+        appView: 'reader' 
+      });
       get().loadArticle(node, false);
     } else {
-      set({ selectedNode: null, readerContent: null, appView: 'graph' });
+      set({ selectedNode: null, readerContent: null, userNotes: '', appView: 'graph' });
     }
   },
 
   loadArticle: async (node, refresh = false) => {
-    set({ readerLoading: true, readerContent: null });
+    const { query } = get();
+    // Only show loader if we don't have cached content OR it's a refresh
+    if (refresh || !node.cachedArticle) {
+      set({ readerLoading: true, readerContent: null });
+    }
+    
     try {
       const article: string = await invoke('generate_article', {
         id: node.id,
+        query,
         topic: node.label,
         description: node.description || '',
         parentId: node.parentId,
         refresh,
       });
-      set({ readerContent: article, readerLoading: false });
+      
+      // Update the node in the local state with the cached article
+      const { nodes, visibleNodes } = get();
+      const updatedNodes = nodes.map(n => n.id === node.id ? { ...n, cachedArticle: article } : n);
+      const updatedVisibleNodes = visibleNodes.map(n => n.id === node.id ? { ...n, cachedArticle: article } : n);
+      const updatedSelectedNode = get().selectedNode?.id === node.id ? { ...get().selectedNode!, cachedArticle: article } : get().selectedNode;
+
+      set({ 
+        nodes: updatedNodes, 
+        visibleNodes: updatedVisibleNodes, 
+        selectedNode: updatedSelectedNode,
+        readerContent: article, 
+        readerLoading: false 
+      });
     } catch (err) {
       console.error('Article generation failed:', err);
       set({ readerContent: `Failed to generate article: ${err}`, readerLoading: false });
+    }
+  },
+
+  saveNotes: async (notes: string) => {
+    const { selectedNode, query, nodes, visibleNodes } = get();
+    if (!selectedNode) return;
+
+    set({ userNotes: notes });
+
+    // Update local state
+    const updatedNodes = nodes.map(n => n.id === selectedNode.id ? { ...n, userNotes: notes } : n);
+    const updatedVisibleNodes = visibleNodes.map(n => n.id === selectedNode.id ? { ...n, userNotes: notes } : n);
+    const updatedSelectedNode = { ...selectedNode, userNotes: notes };
+
+    set({ nodes: updatedNodes, visibleNodes: updatedVisibleNodes, selectedNode: updatedSelectedNode });
+
+    try {
+      await invoke('save_node_notes', { id: selectedNode.id, query, notes });
+    } catch (err) {
+      console.error('Failed to save notes:', err);
     }
   },
 

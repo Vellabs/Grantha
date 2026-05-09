@@ -198,8 +198,12 @@ function ReaderScreen() {
     readerLoading,
     deepDiveNode,
     deepDiveLoading,
-    loadArticle
+    loadArticle,
+    userNotes,
+    saveNotes
   } = useStore();
+
+  const [activeTab, setActiveTab] = useState<'article' | 'notes'>('article');
 
   if (!selectedNode) return null;
 
@@ -218,6 +222,10 @@ function ReaderScreen() {
             </div>
             
             <div style={{ display: 'flex', gap: '0.8rem' }}>
+              <div className="tab-switcher">
+                 <button className={`tab-btn ${activeTab === 'article' ? 'active' : ''}`} onClick={() => setActiveTab('article')}>Article</button>
+                 <button className={`tab-btn ${activeTab === 'notes' ? 'active' : ''}`} onClick={() => setActiveTab('notes')}>Notes</button>
+              </div>
               <button 
                 className="icon-action-button" 
                 onClick={() => loadArticle(selectedNode, true)} 
@@ -234,7 +242,7 @@ function ReaderScreen() {
         </div>
 
         {/* Node description (short summary) */}
-        {selectedNode.description && (
+        {selectedNode.description && activeTab === 'article' && (
           <div className="reader-summary">
             <div className="reader-inner">
               <p>{selectedNode.description}</p>
@@ -242,20 +250,44 @@ function ReaderScreen() {
           </div>
         )}
 
-        {/* Article content */}
+        {/* Article content or Notes */}
         <div className="reader-body">
           <div className="reader-inner" style={{ height: '100%' }}>
-            {readerLoading ? (
-              <div className="reader-loading">
-                <Loader2 size={24} className="animate-spin" />
-                <p>Generating article from LLM…</p>
-              </div>
-            ) : readerContent ? (
-              <div className="reader-article">
-                <MarkdownRenderer content={readerContent} />
-              </div>
+            {activeTab === 'article' ? (
+              readerLoading ? (
+                <div className="reader-loading">
+                  <Loader2 size={24} className="animate-spin" />
+                  <p>Generating thorough article from LLM…</p>
+                </div>
+              ) : readerContent ? (
+                <div className="reader-article">
+                  <MarkdownRenderer content={readerContent} />
+                </div>
+              ) : (
+                <p className="reader-empty">Content not found.</p>
+              )
             ) : (
-              <p className="reader-empty">Content not found.</p>
+              <div className="notes-container" style={{ height: '100%', padding: '1rem 0' }}>
+                <textarea
+                  className="notes-textarea"
+                  placeholder="Write your personal notes for this topic here... (auto-saves)"
+                  value={userNotes}
+                  onChange={(e) => saveNotes(e.target.value)}
+                  style={{ 
+                    width: '100%', 
+                    height: '100%', 
+                    background: 'var(--bg-secondary)', 
+                    color: 'var(--text-primary)', 
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    padding: '1.5rem',
+                    fontSize: '1rem',
+                    lineHeight: '1.6',
+                    resize: 'none',
+                    outline: 'none'
+                  }}
+                />
+              </div>
             )}
           </div>
         </div>
