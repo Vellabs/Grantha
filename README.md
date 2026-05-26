@@ -1,7 +1,7 @@
 # Grantha
 
-[![Release](https://github.com/OWNER/REPO/actions/workflows/release.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/release.yml)
-[![Verify](https://github.com/OWNER/REPO/actions/workflows/verify.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/verify.yml)
+[![Release](https://github.com/Vellabs/Grantha/actions/workflows/release.yml/badge.svg)](https://github.com/Vellabs/Grantha/actions/workflows/release.yml)
+[![Verify](https://github.com/Vellabs/Grantha/actions/workflows/verify.yml/badge.svg)](https://github.com/Vellabs/Grantha/actions/workflows/verify.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Grantha** is an intelligent, local-first knowledge graph and research assistant. It leverages local Large Language Models (LLMs) and Wikipedia to help you map out complex topics, perform deep dives into technical subjects, and generate structured summaries.
@@ -42,7 +42,7 @@ If you are on Linux, you need specific development libraries for Tauri:
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/OWNER/REPO.git
+   git clone https://github.com/Vellabs/Grantha.git
    cd grantha
    ```
 
@@ -110,4 +110,4 @@ The installer will be generated in `src-tauri/target/release/bundle/`.
 
 Distributed under the MIT License. See `LICENSE` for more information.
 
-*(Note: Replace `OWNER/REPO` in links with the actual repository path once hosted.)*
+*(Note: Replace `Vellabs/Grantha` in links with the actual repository path once hosted.)*
