@@ -17,10 +17,11 @@ pub struct KnowledgeGraph {
     pub items: Vec<KnowledgeItem>,
 }
 
+#[derive(Clone)]
 pub struct ResearchAgent {
     client: Client,
-    ollama_url: String,
-    model: String,
+    pub ollama_url: String,
+    pub model: String,
 }
 
 impl ResearchAgent {
@@ -32,9 +33,37 @@ impl ResearchAgent {
         }
     }
 
-    pub async fn query_ollama(&self, prompt: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
-        let response = self.client.post(&self.ollama_url)
-            .json(&serde_json::json!({ "model": self.model, "prompt": prompt, "stream": false }))
+    pub fn set_config(&mut self, url: String, model: String) {
+        self.ollama_url = if url.ends_with("/api/generate") {
+            url
+        } else {
+            format!("{}/api/generate", url.trim_end_matches('/'))
+        };
+        self.model = model;
+    }
+
+    pub async fn list_models(url: &str) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
+        let base_url = url.trim_end_matches('/').trim_end_matches("/api/generate");
+        let tags_url = format!("{}/api/tags", base_url);
+        
+        let client = Client::new();
+        let response = client.get(&tags_url).send().await?;
+        let res: serde_json::Value = response.json().await?;
+        
+        let mut models = Vec::new();
+        if let Some(models_array) = res["models"].as_array() {
+            for m in models_array {
+                if let Some(name) = m["name"].as_str() {
+                    models.push(name.to_string());
+                }
+            }
+        }
+        Ok(models)
+    }
+
+    pub async fn query_ollama(client: &Client, url: &str, model: &str, prompt: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+        let response = client.post(url)
+            .json(&serde_json::json!({ "model": model, "prompt": prompt, "stream": false }))
             .send().await?;
         
         let res: serde_json::Value = response.json().await?;
@@ -50,9 +79,10 @@ impl ResearchAgent {
              {{\"id\": \"id\", \"label\": \"name\", \"description\": \"text\", \"parent_id\": null, \"relationship\": null}} ]}}", 
             query, query
         );
-        let response = self.query_ollama(&prompt).await?;
-        let json_str = response.trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
-        Ok(serde_json::from_str(json_str)?)
+        Self::query_ollama(&self.client, &self.ollama_url, &self.model, &prompt).await.map(|response| {
+            let json_str = response.trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+            serde_json::from_str(json_str).unwrap_or_else(|_| KnowledgeGraph { query: query.to_string(), items: vec![] })
+        }).map_err(|e| e)
     }
 
     pub async fn deep_dive(&self, topic: &str, context: &str, query: &str, parent_id: &str) -> Result<KnowledgeGraph, Box<dyn Error + Send + Sync>> {
@@ -63,9 +93,10 @@ impl ResearchAgent {
              {{\"id\": \"unique_id\", \"label\": \"name\", \"description\": \"text\", \"parent_id\": \"{}\", \"relationship\": \"related to\"}} ]}}", 
             topic, context, query, query, parent_id
         );
-        let response = self.query_ollama(&prompt).await?;
-        let json_str = response.trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
-        Ok(serde_json::from_str(json_str)?)
+        Self::query_ollama(&self.client, &self.ollama_url, &self.model, &prompt).await.map(|response| {
+            let json_str = response.trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+            serde_json::from_str(json_str).unwrap_or_else(|_| KnowledgeGraph { query: query.to_string(), items: vec![] })
+        }).map_err(|e| e)
     }
 
     pub async fn render_topic(&self, topic: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
@@ -81,6 +112,23 @@ impl ResearchAgent {
             topic, wiki_url, content
         );
         
-        self.query_ollama(&prompt).await
+        Self::query_ollama(&self.client, &self.ollama_url, &self.model, &prompt).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_config() {
+        let mut agent = ResearchAgent::new();
+        agent.set_config("http://localhost:11434".to_string(), "llama3".to_string());
+        assert_eq!(agent.ollama_url, "http://localhost:11434/api/generate");
+        assert_eq!(agent.model, "llama3");
+
+        agent.set_config("http://localhost:11434/api/generate".to_string(), "gemma".to_string());
+        assert_eq!(agent.ollama_url, "http://localhost:11434/api/generate");
+        assert_eq!(agent.model, "gemma");
     }
 }

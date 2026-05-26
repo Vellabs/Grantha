@@ -1,6 +1,7 @@
 # Grantha
 
 [![Release](https://github.com/OWNER/REPO/actions/workflows/release.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/release.yml)
+[![Verify](https://github.com/OWNER/REPO/actions/workflows/verify.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/verify.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Grantha** is an intelligent, local-first knowledge graph and research assistant. It leverages local Large Language Models (LLMs) and Wikipedia to help you map out complex topics, perform deep dives into technical subjects, and generate structured summaries.
@@ -14,11 +15,8 @@ To run Grantha successfully, you need the following dependencies installed on yo
 ### 1. Ollama (Required)
 Grantha relies on a local [Ollama](https://ollama.com/) instance for all AI processing.
 - **Install**: [Download Ollama](https://ollama.com/download)
-- **Required Model**: You must pull the specific model used by the application:
-  ```bash
-  ollama pull gemma4:31b-cloud
-  ```
-  *(Note: Ensure Ollama is running in the background while using Grantha.)*
+- **Model Configuration**: You can configure your preferred model (e.g., `gemma2:27b`, `llama3.1:8b`) via the built-in Setup Wizard.
+- Ensure Ollama is running in the background.
 
 ### 2. Rust & Cargo
 The backend is built with Rust and Tauri.

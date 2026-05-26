@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 
-export type AppView = 'search' | 'researching' | 'graph' | 'reader';
+export type AppView = 'search' | 'researching' | 'graph' | 'reader' | 'settings';
 
 export interface Node {
   id: string;
@@ -40,6 +40,13 @@ interface GranthaStore {
   // Deep dive loading
   deepDiveLoading: boolean;
 
+  // Settings
+  ollamaUrl: string;
+  model: string;
+  availableModels: string[];
+  connectivityStatus: 'checking' | 'connected' | 'error';
+  isConfigured: boolean;
+
   // Actions
   startResearch: (query: string) => Promise<void>;
   viewHistory: (query: string) => Promise<void>;
@@ -52,6 +59,10 @@ interface GranthaStore {
   loadFullGraph: (query: string, preserveVisibility?: boolean) => Promise<void>;
   loadHistory: () => Promise<void>;
   deleteHistoryItem: (query: string) => Promise<void>;
+  loadSettings: () => Promise<void>;
+  saveSettings: (url: string, model: string) => Promise<void>;
+  checkConnectivity: (url: string) => Promise<void>;
+  setAppView: (view: AppView) => void;
   reset: () => void;
 }
 
@@ -69,6 +80,48 @@ export const useStore = create<GranthaStore>((set, get) => ({
   readerLoading: false,
   userNotes: '',
   deepDiveLoading: false,
+  ollamaUrl: 'http://localhost:11434',
+  model: '',
+  availableModels: [],
+  connectivityStatus: 'checking',
+  isConfigured: false,
+
+  loadSettings: async () => {
+    try {
+      const settings: { ollama_url: string, model: string } = await invoke('get_settings');
+      set({ 
+        ollamaUrl: settings.ollama_url, 
+        model: settings.model,
+        isConfigured: settings.model !== ''
+      });
+      await get().checkConnectivity(settings.ollama_url);
+    } catch (err) {
+      console.error('Failed to load settings:', err);
+    }
+  },
+
+  saveSettings: async (url: string, model: string) => {
+    try {
+      await invoke('save_settings', { url, model });
+      set({ ollamaUrl: url, model, isConfigured: true, appView: 'search' });
+    } catch (err) {
+      console.error('Failed to save settings:', err);
+      set({ error: `Failed to save settings: ${err}` });
+    }
+  },
+
+  checkConnectivity: async (url: string) => {
+    set({ connectivityStatus: 'checking' });
+    try {
+      const models: string[] = await invoke('check_ollama_connection', { url });
+      set({ availableModels: models, connectivityStatus: 'connected' });
+    } catch (err) {
+      console.error('Connectivity check failed:', err);
+      set({ availableModels: [], connectivityStatus: 'error' });
+    }
+  },
+
+  setAppView: (view) => set({ appView: view }),
 
   loadFullGraph: async (query: string, preserveVisibility: boolean = false) => {
     try {

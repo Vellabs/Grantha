@@ -2,13 +2,24 @@ import { useState, useEffect } from 'react';
 import { Search, X, Microscope, AlertCircle, BookOpen, Loader2, RefreshCw, Clock, Plus, Trash2 } from 'lucide-react';
 import { useStore, Node } from './store';
 import { KnowledgeGraph } from './KnowledgeGraph';
+import { SetupWizard } from './components/SetupWizard';
 import './App.css';
 
 function App() {
-  const { appView, startResearch, viewHistory, query, visibleNodes, visibleEdges, error, reset, selectedNode } = useStore();
+  const { appView, startResearch, viewHistory, query, visibleNodes, visibleEdges, error, reset, selectedNode, isConfigured, loadSettings } = useStore();
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
+
+  if (!isConfigured && appView !== 'settings') {
+    // Show splash/loader while checking, or force settings if not configured
+    return <SetupWizard />;
+  }
 
   return (
     <div className="app-container">
+      {appView === 'settings' && <SetupWizard />}
       {appView === 'search' && (
         <SearchScreen 
           onSearch={(q) => {
@@ -39,7 +50,7 @@ function App() {
 /* ───────────── Search Screen ───────────── */
 function SearchScreen({ onSearch, onHistoryClick, error }: { onSearch: (q: string) => void; onHistoryClick: (q: string) => void; error: string | null }) {
   const [inputValue, setInputValue] = useState('');
-  const { history, loadHistory, deleteHistoryItem } = useStore();
+  const { history, loadHistory, deleteHistoryItem, setAppView, model } = useStore();
 
   useEffect(() => {
     loadHistory();
@@ -96,6 +107,15 @@ function SearchScreen({ onSearch, onHistoryClick, error }: { onSearch: (q: strin
 
       {/* ── Main Search Area ── */}
       <div className="search-main">
+        <div className="search-top-bar">
+          <div className="model-badge">
+            <Microscope size={14} />
+            <span>{model}</span>
+          </div>
+          <button className="icon-button" onClick={() => setAppView('settings')} title="Settings">
+            <RefreshCw size={18} />
+          </button>
+        </div>
         <div className="search-container">
           <h1 className="search-title">Grantha</h1>
           <p className="search-subtitle">Local Research Knowledge Graph Builder</p>

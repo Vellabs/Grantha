@@ -1,11 +1,38 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 mod research;
 use research::{ResearchAgent, KnowledgeGraph};
 use serde::{Serialize, Deserialize};
 
-pub struct AppState { pub db: Mutex<Connection>, pub agent: ResearchAgent }
+#[derive(Debug, thiserror::Error)]
+pub enum AppError {
+    #[error("Database error: {0}")]
+    Db(#[from] rusqlite::Error),
+    #[error("Ollama error: {0}")]
+    Ollama(String),
+    #[error("Wikipedia error: {0}")]
+    Wiki(String),
+    #[error("Configuration error: {0}")]
+    Config(String),
+}
+
+impl serde::Serialize for AppError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.to_string().as_ref())
+    }
+}
+
+pub struct AppState { pub db: Mutex<Connection>, pub agent: Mutex<ResearchAgent> }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AppSettings {
+    pub ollama_url: String,
+    pub model: String,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Node { 
@@ -44,43 +71,53 @@ impl From<KnowledgeGraph> for GraphData {
 }
 
 #[tauri::command]
-async fn perform_research(state: State<'_, AppState>, query: String) -> Result<GraphData, String> {
-    let kg = state.agent.from_query(&query).await.map_err(|e| e.to_string())?;
+async fn perform_research(state: State<'_, AppState>, query: String) -> Result<GraphData, AppError> {
+    let agent = {
+        let a = state.agent.lock().unwrap();
+        a.clone()
+    };
+    let kg = agent.from_query(&query).await.map_err(|e| AppError::Ollama(e.to_string()))?;
+
     let data: GraphData = kg.into();
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("INSERT OR IGNORE INTO history (query) VALUES (?)", [&query]).ok();
+    let conn = state.db.lock().unwrap();
+    conn.execute("INSERT OR IGNORE INTO history (query) VALUES (?)", [&query])?;
     for n in &data.nodes { 
         conn.execute("INSERT OR REPLACE INTO nodes (id, label, desc, query, x, y) VALUES (?,?,?,?,?,?)", 
-            rusqlite::params![&n.id, &n.label, &n.description.clone().unwrap_or_default(), &query, n.x, n.y]).ok(); 
+            rusqlite::params![&n.id, &n.label, &n.description.clone().unwrap_or_default(), &query, n.x, n.y])?; 
     }
     for e in &data.edges { 
-        conn.execute("INSERT OR REPLACE INTO edges VALUES (?,?,?,?,?)", [&e.id, &e.source, &e.target, &e.label.clone().unwrap_or_default(), &query]).ok(); 
+        conn.execute("INSERT OR REPLACE INTO edges VALUES (?,?,?,?,?)", [&e.id, &e.source, &e.target, &e.label.clone().unwrap_or_default(), &query])?; 
     }
     Ok(data)
 }
 
 #[tauri::command]
-async fn deep_dive_node(state: State<'_, AppState>, topic: String, context: String, query: String, parent_id: String) -> Result<GraphData, String> {
-    let kg = state.agent.deep_dive(&topic, &context, &query, &parent_id).await.map_err(|e| e.to_string())?;
+async fn deep_dive_node(state: State<'_, AppState>, topic: String, context: String, query: String, parent_id: String) -> Result<GraphData, AppError> {
+    let agent = {
+        let a = state.agent.lock().unwrap();
+        a.clone()
+    };
+    let kg = agent.deep_dive(&topic, &context, &query, &parent_id).await.map_err(|e| AppError::Ollama(e.to_string()))?;
+
     let data: GraphData = kg.into();
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock().unwrap();
     
     for n in &data.nodes { 
         conn.execute("INSERT OR REPLACE INTO nodes (id, label, desc, query, x, y) VALUES (?,?,?,?,?,?)", 
-            rusqlite::params![&n.id, &n.label, &n.description.clone().unwrap_or_default(), &query, n.x, n.y]).ok(); 
+            rusqlite::params![&n.id, &n.label, &n.description.clone().unwrap_or_default(), &query, n.x, n.y])?; 
     }
     for e in &data.edges { 
-        conn.execute("INSERT OR REPLACE INTO edges VALUES (?,?,?,?,?)", [&e.id, &e.source, &e.target, &e.label.clone().unwrap_or_default(), &query]).ok(); 
+        conn.execute("INSERT OR REPLACE INTO edges VALUES (?,?,?,?,?)", [&e.id, &e.source, &e.target, &e.label.clone().unwrap_or_default(), &query])?; 
     }
     Ok(data)
 }
 
 #[tauri::command]
-fn delete_search_history(state: State<AppState>, query: String) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM nodes WHERE query = ?", [&query]).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM edges WHERE query = ?", [&query]).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM history WHERE query = ?", [&query]).map_err(|e| e.to_string())?;
+fn delete_search_history(state: State<AppState>, query: String) -> Result<(), AppError> {
+    let conn = state.db.lock().unwrap();
+    conn.execute("DELETE FROM nodes WHERE query = ?", [&query])?;
+    conn.execute("DELETE FROM edges WHERE query = ?", [&query])?;
+    conn.execute("DELETE FROM history WHERE query = ?", [&query])?;
     Ok(())
 }
 
@@ -93,42 +130,48 @@ async fn generate_article(
     _description: String, 
     _parent_id: Option<String>, 
     refresh: bool
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     if !refresh {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let mut s = conn.prepare("SELECT cached_article FROM nodes WHERE id = ? AND query = ?").map_err(|e| e.to_string())?;
-        if let Ok(Some(cached)) = s.query_row([&id, &query], |r| r.get::<_, Option<String>>(0)) {
-            return Ok(cached);
+        let conn = state.db.lock().unwrap();
+        let mut s = conn.prepare("SELECT cached_article FROM nodes WHERE id = ? AND query = ?")?;
+        if let Ok(Some(cached)) = s.query_row([&id, &query], |r| r.get::<_, Option<String>>(0)).optional() {
+            if let Some(content) = cached {
+                return Ok(content);
+            }
         }
     }
     
-    let article = state.agent.render_topic(&topic).await.map_err(|e| e.to_string())?;
-    
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("UPDATE nodes SET cached_article = ? WHERE id = ? AND query = ?", rusqlite::params![&article, &id, &query]).map_err(|e| e.to_string())?;
+    let agent = {
+        let a = state.agent.lock().unwrap();
+        a.clone()
+    };
+    let article = agent.render_topic(&topic).await.map_err(|e| AppError::Ollama(e.to_string()))?;
+
+    let conn = state.db.lock().unwrap();
+    conn.execute("UPDATE nodes SET cached_article = ? WHERE id = ? AND query = ?", rusqlite::params![&article, &id, &query])?;
     
     Ok(article)
 }
 
 #[tauri::command]
-fn save_node_notes(state: State<AppState>, id: String, query: String, notes: String) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("UPDATE nodes SET user_notes = ? WHERE id = ? AND query = ?", rusqlite::params![&notes, &id, &query]).map_err(|e| e.to_string())?;
+fn save_node_notes(state: State<AppState>, id: String, query: String, notes: String) -> Result<(), AppError> {
+    let conn = state.db.lock().unwrap();
+    conn.execute("UPDATE nodes SET user_notes = ? WHERE id = ? AND query = ?", rusqlite::params![&notes, &id, &query])?;
     Ok(())
 }
 
 #[tauri::command]
-fn get_search_history(state: State<AppState>) -> Result<Vec<String>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut s = conn.prepare("SELECT query FROM history ORDER BY ts DESC").map_err(|e| e.to_string())?;
-    let list: Vec<String> = s.query_map([], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+fn get_search_history(state: State<AppState>) -> Result<Vec<String>, AppError> {
+    let conn = state.db.lock().unwrap();
+    let mut s = conn.prepare("SELECT query FROM history ORDER BY ts DESC")?;
+    let list: Vec<String> = s.query_map([], |r| r.get(0))?.filter_map(|r| r.ok()).collect();
     Ok(list)
 }
 
 #[tauri::command]
-fn load_full_graph(state: State<AppState>, query: String) -> Result<GraphData, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut sn = conn.prepare("SELECT id, label, desc, x, y, cached_article, user_notes FROM nodes WHERE query = ?").map_err(|e| e.to_string())?;
+fn load_full_graph(state: State<AppState>, query: String) -> Result<GraphData, AppError> {
+    let conn = state.db.lock().unwrap();
+    let mut sn = conn.prepare("SELECT id, label, desc, x, y, cached_article, user_notes FROM nodes WHERE query = ?")?;
     let nodes: Vec<Node> = sn.query_map([&query], |r| Ok(Node { 
         id: r.get(0)?, 
         label: r.get(1)?, 
@@ -137,22 +180,57 @@ fn load_full_graph(state: State<AppState>, query: String) -> Result<GraphData, S
         y: r.get(4)?,
         cached_article: r.get(5)?,
         user_notes: r.get(6)?
-    })).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-    let mut se = conn.prepare("SELECT source, target, label FROM edges WHERE query = ?").map_err(|e| e.to_string())?;
-    let edges: Vec<Edge> = se.query_map([&query], |e| Ok(Edge { id: format!("{}_{}", e.get::<_,String>(0)?, e.get::<_,String>(1)?), source: e.get(0)?, target: e.get(1)?, label: e.get(2)? })).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    }))?.filter_map(|r| r.ok()).collect();
+    let mut se = conn.prepare("SELECT source, target, label FROM edges WHERE query = ?")?;
+    let edges: Vec<Edge> = se.query_map([&query], |e| Ok(Edge { id: format!("{}_{}", e.get::<_,String>(0)?, e.get::<_,String>(1)?), source: e.get(0)?, target: e.get(1)?, label: e.get(2)? }))?.filter_map(|r| r.ok()).collect();
     Ok(GraphData { nodes, edges })
 }
 
 #[tauri::command]
-fn update_node_positions(state: State<AppState>, query: String, nodes: Vec<Node>) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+fn update_node_positions(state: State<AppState>, query: String, nodes: Vec<Node>) -> Result<(), AppError> {
+    let conn = state.db.lock().unwrap();
     for n in nodes {
         conn.execute(
             "UPDATE nodes SET x = ?, y = ? WHERE id = ? AND query = ?",
             rusqlite::params![n.x, n.y, n.id, query],
-        ).map_err(|e| e.to_string())?;
+        )?;
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, AppError> {
+    let conn = state.db.lock().unwrap();
+    let mut s = conn.prepare("SELECT ollama_url, model FROM settings LIMIT 1")?;
+    let settings = s.query_row([], |r| Ok(AppSettings {
+        ollama_url: r.get(0)?,
+        model: r.get(1)?,
+    })).optional()?;
+
+    match settings {
+        Some(s) => Ok(s),
+        None => Ok(AppSettings {
+            ollama_url: "http://localhost:11434".to_string(),
+            model: "".to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+async fn save_settings(state: State<'_, AppState>, url: String, model: String) -> Result<(), AppError> {
+    let mut agent = state.agent.lock().unwrap();
+    agent.set_config(url.clone(), model.clone());
+    drop(agent);
+
+    let conn = state.db.lock().unwrap();
+    conn.execute("DELETE FROM settings", [])?;
+    conn.execute("INSERT INTO settings (ollama_url, model) VALUES (?, ?)", [&url, &model])?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn check_ollama_connection(url: String) -> Result<Vec<String>, AppError> {
+    ResearchAgent::list_models(&url).await.map_err(|e| AppError::Ollama(e.to_string()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -160,14 +238,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().build())
         .setup(|app| {
-            let p = app.path().app_data_dir().map_err(|e| e.to_string())?.join("g.db");
-            std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
-            let c = Connection::open(p).map_err(|e| e.to_string())?;
+            let p = app.path().app_data_dir().expect("app data dir").join("g.db");
+            std::fs::create_dir_all(p.parent().unwrap()).expect("create dir");
+            let c = Connection::open(p).expect("db open");
             
             // Comprehensive migration check
-            let table_info = c.prepare("PRAGMA table_info(nodes)").map_err(|e| e.to_string())?
+            let table_info = c.prepare("PRAGMA table_info(nodes)").unwrap()
                 .query_map([], |r| r.get::<_, String>(1))
-                .map_err(|e| e.to_string())?
+                .unwrap()
                 .filter_map(|r| r.ok())
                 .collect::<Vec<String>>();
 
@@ -182,11 +260,25 @@ pub fn run() {
                 c.execute("DROP TABLE IF EXISTS history", []).ok();
             }
 
-            c.execute("CREATE TABLE IF NOT EXISTS nodes (id TEXT, label TEXT, desc TEXT, query TEXT, x REAL, y REAL, cached_article TEXT, user_notes TEXT, PRIMARY KEY(id, query))", []).map_err(|e| e.to_string())?;
-            c.execute("CREATE TABLE IF NOT EXISTS edges (id TEXT, source TEXT, target TEXT, label TEXT, query TEXT, PRIMARY KEY(id, query))", []).map_err(|e| e.to_string())?;
-            c.execute("CREATE TABLE IF NOT EXISTS history (query TEXT PRIMARY KEY, ts DATETIME DEFAULT CURRENT_TIMESTAMP)", []).map_err(|e| e.to_string())?;
+            c.execute("CREATE TABLE IF NOT EXISTS nodes (id TEXT, label TEXT, desc TEXT, query TEXT, x REAL, y REAL, cached_article TEXT, user_notes TEXT, PRIMARY KEY(id, query))", []).unwrap();
+            c.execute("CREATE TABLE IF NOT EXISTS edges (id TEXT, source TEXT, target TEXT, label TEXT, query TEXT, PRIMARY KEY(id, query))", []).unwrap();
+            c.execute("CREATE TABLE IF NOT EXISTS history (query TEXT PRIMARY KEY, ts DATETIME DEFAULT CURRENT_TIMESTAMP)", []).unwrap();
+            c.execute("CREATE TABLE IF NOT EXISTS settings (ollama_url TEXT, model TEXT)", []).unwrap();
+
+            let mut agent = ResearchAgent::new();
             
-            app.manage(AppState { db: Mutex::new(c), agent: ResearchAgent::new() });
+            // Load settings into agent if they exist
+            if let Ok(Some(s)) = c.query_row("SELECT ollama_url, model FROM settings LIMIT 1", [], |r| Ok(AppSettings { 
+                ollama_url: r.get(0)?, 
+                model: r.get(1)? 
+            })).optional() {
+                agent.set_config(s.ollama_url, s.model);
+            }
+            
+            app.manage(AppState { 
+                db: Mutex::new(c), 
+                agent: Mutex::new(agent) 
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -197,7 +289,10 @@ pub fn run() {
             deep_dive_node,
             delete_search_history,
             update_node_positions,
-            save_node_notes
+            save_node_notes,
+            get_settings,
+            save_settings,
+            check_ollama_connection
         ])
         .run(tauri::generate_context!())
         .expect("err");
